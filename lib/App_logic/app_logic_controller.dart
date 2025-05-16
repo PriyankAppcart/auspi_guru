@@ -22,6 +22,9 @@ import 'package:timezone/timezone.dart' as tz;
 
 class app_logic_controller extends GetxController{
 
+  var isDarkMode = false.obs; // Changed to RxBool for reactivity
+  bool _isUserThemeSet = false; // Track if user has manually set theme
+
   /*
   * GPS DATA
   * */
@@ -173,8 +176,8 @@ class app_logic_controller extends GetxController{
   var myvipal =0.00;
   var rahukaalstartTime="";
   var rahukaalendTime="";
-  bool internetConnection = true;
-  bool enableDeviceLocation = true;
+  var internetConnection = true.obs;
+  var enableDeviceLocation = true.obs;
   var CityName;
   var City="";
   var State="";
@@ -277,8 +280,9 @@ class app_logic_controller extends GetxController{
     super.onInit();
 
     await LocalNotificationService.configureLocalTimeZone();
+    await initializeTheme();
     print("TimeZone${commonStorage.box.read('TimeZone')}");
-    checkGps();
+    await checkGps();
    var notify_permission= _notificationsPlugin!.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>()!.requestNotificationsPermission();
 
@@ -489,6 +493,55 @@ if(Agni_hand>=360.0)
 
 
   }
+
+
+
+  
+// Initialize theme based on system or stored preference
+  Future<void> initializeTheme() async {
+    final prefs = await SharedPreferences.getInstance();
+    // Check if user has manually set a theme
+    final storedTheme = prefs.getString('theme');
+    if (storedTheme != null) {
+      isDarkMode.value = storedTheme == 'dark';
+      _isUserThemeSet = true;
+    } else {
+      // Use system theme if no user preference is set
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final context = Get.context;
+        if (context != null) {
+          final brightness = MediaQuery.of(context).platformBrightness;
+  
+          isDarkMode.value = brightness == Brightness.dark;
+        }
+      });
+      _isUserThemeSet = false;
+    }
+    update();
+  }
+
+  // Toggle theme and save user preference
+  void toggleTheme() {
+    isDarkMode.value = !isDarkMode.value;
+    _isUserThemeSet = true;
+    _saveThemePreference();
+    update();
+  }
+
+  // Save theme preference to SharedPreferences
+  Future<void> _saveThemePreference() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('theme', isDarkMode.value ? 'dark' : 'light');
+  }
+
+  // Update isDarkMode based on system theme (used by WidgetsBindingObserver)
+  void updateSystemTheme(Brightness brightness) {
+    if (!_isUserThemeSet) {
+      isDarkMode.value = brightness == Brightness.dark;
+      update();
+    }
+  }
+
 Future<void> GhatikaCalFunction()
 async {
   // SharedPreferences sharedPreferences = await SharedPreferences.getInstance();
@@ -882,7 +935,7 @@ getData(Moonphase);
 
       if(haspermission){
         //  update();
-        enableDeviceLocation = true;
+        enableDeviceLocation.value = true;
         print("getLfocation call=======");
         if(await CheckInternet.checkInternet()) {
           updateFlag(true);
@@ -893,18 +946,85 @@ getData(Moonphase);
         //getLocation();
 
       }
-    }else{
-      // Geolocator.openAppSettings();
-      enableDeviceLocation = false;
-      var openApp = await Geolocator.openLocationSettings();
-      print("openApp  $openApp");
-
-      print("GPS Service is not enabled, turn on GPS location");
-      return Future.error('Location services are disabled.');
-      // await openAppSettings();
-      //return Future.error('Location permissions are denied');
-
+    }else {
+  print("GPS Service is not enabled, prompting to turn on GPS location");
+  enableDeviceLocation.value = false;
+  await Geolocator.openLocationSettings();
+  // Recheck location services after returning from settings
+  servicestatus = await Geolocator.isLocationServiceEnabled();
+  if (servicestatus) {
+    // Location services enabled, retry permission check
+    print("GPS Service enabled, checking permissions");
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        print('Location permissions are denied');
+        Get.snackbar(
+          "Location Permission",
+          "Location permission is required for accurate data.",
+          snackPosition: SnackPosition.BOTTOM,
+          duration: Duration(seconds: 5),
+          mainButton: TextButton(
+            onPressed: () => Geolocator.requestPermission(),
+            child: Text("Retry"),
+          ),
+        );
+        enableDeviceLocation.value = false;
+      } else if (permission == LocationPermission.deniedForever) {
+        print('Location permissions are permanently denied');
+        Get.snackbar(
+          "Location Permission",
+          "Location permission is permanently denied. Please enable it in settings.",
+          snackPosition: SnackPosition.BOTTOM,
+          duration: Duration(seconds: 5),
+          mainButton: TextButton(
+            onPressed: () => Geolocator.openAppSettings(),
+            child: Text("Open Settings"),
+          ),
+        );
+        enableDeviceLocation.value = false;
+      } else {
+        haspermission = true;
+      }
+    } else if (permission == LocationPermission.deniedForever) {
+      print('Location permissions are permanently denied');
+      Get.snackbar(
+        "Location Permission",
+        "Location permission is permanently denied. Please enable it in settings.",
+        snackPosition: SnackPosition.BOTTOM,
+        duration: Duration(seconds: 5),
+        mainButton: TextButton(
+          onPressed: () => Geolocator.openAppSettings(),
+          child: Text("Open Settings"),
+        ),
+      );
+      enableDeviceLocation.value = false;
+    } else {
+      haspermission = true;
     }
+
+    if (haspermission) {
+      enableDeviceLocation.value = true;
+      print("getLocation call=======");
+      if (await CheckInternet.checkInternet()) {
+        updateFlag(true);
+        await getLocation();
+      } else {
+        updateFlag(false);
+      }
+    }
+  } else {
+    // Location services still disabled
+    print("GPS Service still disabled");
+    enableDeviceLocation.value = false;
+    Get.snackbar(
+      "Location Services",
+      "Please enable GPS in device settings to continue.",
+      snackPosition: SnackPosition.BOTTOM,
+      duration: Duration(seconds: 5),
+    );
+  }}
 
     update();
   }
@@ -957,7 +1077,7 @@ getData(Moonphase);
   }
   getLocationPreset(preset_lat, preset_long) async {
 
-    enableDeviceLocation = true;
+    enableDeviceLocation.value = true;
     //var preset_lat=18.516726;
    // var preset_long=73.856255;
       long = preset_long;
@@ -985,10 +1105,10 @@ getData(Moonphase);
 
 
   }
-  void updateFlag(flag) {
-    internetConnection = flag;
-    update();
-  }
+  void updateFlag(bool flag) {
+  internetConnection.value = flag;
+  update();
+}
   void getData(moonphase) {
 
     print(moonphase[0].illumination);
